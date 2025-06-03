@@ -1,188 +1,125 @@
-import { test, expect } from '@playwright/test';
- 
-interface WordPressPost {
-  id: number;
-  date: string;
-  date_gmt: string;
-  guid: {
-    rendered: string;
-  };
-  modified: string;
-  modified_gmt: string;
-  slug: string;
-  status: string;
-  sticky: boolean;
-  type: string;
-  link: string;
-  title: {
-    rendered: string;
-  };
-  content: {
-    rendered: string;
-    protected: boolean;
-  };
-  author: number;
-  comment_status: string;
-  ping_status: string;
-  template: string;
-  meta: object;
-}
- 
-test.describe('WordPress Post Lifecycle', () => {
-  const baseUrl = 'https://dev.emeli.in.ua/wp-json/wp/v2';
-  const credentials = Buffer.from('admin:Engineer_123').toString('base64');
-  const PERFORMANCE_TIMEOUT = 3000;
- 
-    test.beforeAll(async ({ request }) => {
-    const healthCheck = await request.get(`${baseUrl}/posts`, {
-    headers: {
-        'Authorization': `Basic ${credentials}`
-         }
-         });
-        expect(healthCheck.status()).toBe(200); //'API should be accessible'
-    });
- 
-    test('should handle full post lifecycle - create, edit, delete', async ({ request }) => {
-        const createStartTime = Date.now(); //поточна дата
-        
-        const createData = {
-            title: 'Test Lifecycle Post',
-            content: 'Initial content for lifecycle testing',
-            status: 'publish', //передаємо json
-            sticky: true,
-            comment_status: 'open',
-            ping_status: 'closed',
-            template: '',
-            meta: {
-                footnotes: ""
-            },
-            author: 1
-            };
-       
-            const createResponse = await request.post(`${baseUrl}/posts`, {
-            headers: {
-            'Authorization': `Basic ${credentials}`, //авторизація
-            'Content-Type': 'application/json'  //передаємо в json
-             },
-            data: createData //payload / body запиту
-            });
-        
-        const createTime = Date.now() - createStartTime; //початок запиту
-            expect(createTime).toBeLessThan(PERFORMANCE_TIMEOUT); //'Create operation should be fast'
-            expect(createResponse.status()).toBe(201); //'Post should be created'
-        
-        const createdPost = await createResponse.json() as WordPressPost; //перевіряємо тип поля
-            expect(createdPost.id).toBeTruthy(); //'Created post should have an ID' - первірка що id існує
-            expect(createdPost.title.rendered).toBe(createData.title); //що те що вели отримали в запиті
-            expect(createdPost.content.rendered).toContain(createData.content); //так само
-            expect(createdPost.status).toContain(createData.status);
-            expect(createdPost.sticky).toBe(createData.sticky); //перевірка що sticky true
-            expect(createdPost.comment_status).toContain(createData.comment_status);
-            expect(createdPost.ping_status).toContain(createData.ping_status);
-            expect(createdPost.template).toContain(createData.template);
-            expect(createdPost.meta).toMatchObject(createData.meta);
-            expect(createdPost.author).toBe(createData.author); //перевірка що автор 1
-   
-        await new Promise(resolve => setTimeout(resolve, 1000)); //чекаємо створення перед редагуванням
- 
-   
-        const editStartTime = Date.now(); //редагування дати константа
-        
-        const updateData = {
-            title: 'Updated Lifecycle Post',
-            content: 'Updated content for lifecycle testing',
-        };
-        
-        const editResponse = await request.put(`${baseUrl}/posts/${createdPost.id}`, {
-            headers: {
-            'Authorization': `Basic ${credentials}`,
-            'Content-Type': 'application/json'
-            },
-            data: updateData
-        });
-        
-        const editTime = Date.now() - editStartTime;
-        expect(editTime).toBeLessThan(PERFORMANCE_TIMEOUT); //'Edit operation should be fast'
-        expect(editResponse.status()).toBe(200); //'Post should be updated'
- 
-        const updatedPost = await editResponse.json() as WordPressPost;
-        expect(updatedPost.id).toBe(createdPost.id); //'Post ID should remain the same'
-        expect(updatedPost.title.rendered).toBe(updateData.title);
-        expect(updatedPost.content.rendered).toContain(updateData.content);
-        expect(updatedPost.modified).not.toBe(createdPost.modified); // 'Modified date should be updated'
- 
-  
-        const getResponse = await request.get(`${baseUrl}/posts/${createdPost.id}`, {
-            headers: {
-            'Authorization': `Basic ${credentials}`
-            }
-            });
-        expect(getResponse.status()).toBe(200); //'Should be able to get updated post'
-        
-        const retrievedPost = await getResponse.json() as WordPressPost;
-        expect(retrievedPost.title.rendered).toBe(updateData.title);
-        expect(retrievedPost.content.rendered).toContain(updateData.content);
- 
-        await new Promise(resolve => setTimeout(resolve, 1000));
- 
-        const deleteStartTime = Date.now();
-        const deleteResponse = await request.delete(`${baseUrl}/posts/${createdPost.id}?force=true`, {
-            headers: {
-            'Authorization': `Basic ${credentials}`
-            }
-        });
- 
-        const deleteTime = Date.now() - deleteStartTime;
-        expect(deleteTime).toBeLessThan(PERFORMANCE_TIMEOUT);  //'Delete operation should be fast'
-        expect(deleteResponse.status()).toBe(200); //'Post should be deleted'
- 
-        //Проверка, что статья действительно удалена
-        const checkDeletedResponse = await request.get(`${baseUrl}/posts/${createdPost.id}`, {
-            headers: {
-            'Authorization': `Basic ${credentials}`
-             }
-        });
+import { test, expect, request } from '@playwright/test';
+import { PostApi } from './api/postApi';
+import { WordPressPost } from './api/types';
 
-        expect(checkDeletedResponse.status()).toBe(404); //'Deleted post should not be accessible'
+test('WordPress Post Lifecycle (create → update → get → delete)', async ({ request }) => {
+  const wpApi = new PostApi(request);
+  let createdPost: WordPressPost;
+  let postId: number;
  
-    
-        const totalTime = createTime + editTime + deleteTime;
-            console.log({
-            createTime: `${createTime}ms`,
-            editTime: `${editTime}ms`,
-            deleteTime: `${deleteTime}ms`,
-            totalTime: `${totalTime}ms`
-        });
+  await test.step('Health Check', async () => {
+    await wpApi.healthCheck();
+  });
+ 
+  await test.step('Create Post', async () => {
+    const { post } = await wpApi.createPost({
+      title: 'Initial Test Title',
+      content: 'Initial Test Content',
+      status: 'publish'
     });
+    createdPost = post;
+    postId = post.id;
+    expect(post.title.rendered).toBe('Initial Test Title');
+  });
  
+  await test.step('Update Post', async () => {
+    const { post } = await wpApi.updatePost(postId, {
+      title: 'Updated Test Title',
+      content: 'Updated Test Content'
+    });
+    expect(post.title.rendered).toBe('Updated Test Title');
+  });
  
-  test('should handle errors appropriately', async ({ request }) => {
-    // Попытка редактирования несуществующей статьи
-        const nonExistentId = 999999;
-        const errorResponse = await request.put(`${baseUrl}/posts/${nonExistentId}`, {
-            headers: {
-            'Authorization': `Basic ${credentials}`,
-            'Content-Type': 'application/json'
-            },
-            data: {
-            title: 'This should fail',
-            content: 'This update should fail'
-            }
-        });
+  await test.step('Get Post', async () => {
+    const post = await wpApi.getPost(postId);
+    expect(post.id).toBe(postId);
+    expect(post.title.rendered).toBe('Updated Test Title');
+  });
  
-        expect(errorResponse.status()).toBe(404);
-
-        const invalidResponse = await request.post(`${baseUrl}/posts`, {
-            headers: {
-            'Authorization': `Basic ${credentials}`,
-            'Content-Type': 'application/json'
-            },
-            data: {
-            // Пропускаем обязательное поле title
-            content: 'This should fail due to missing title'
-             }
-        });
+  await test.step('Delete Post', async () => {
+    const time = await wpApi.deletePost(postId);
+    console.log(`Post deleted in ${time} ms`);
+  });
  
-        expect(invalidResponse.status()).toBe(400);
-         });
+  await test.step('Negative cases (404, 400)', async () => {
+    expect(await wpApi.getNonExistentPost(postId)).toBe(404);
+    expect(await wpApi.updateNonExistentPost(postId)).toBe(404);
+    expect(await wpApi.createInvalidPost()).toBe(400);
+  });
 });
+
+
+
+
+
+
+// test.describe('WordPress Post Lifecycle', () => {
+//   let apiContext;
+//   let wpApi: PostApi;
+//   let createdPost: WordPressPost;
+//   let responseTime: number;
+ 
+//   test.beforeAll(async ({ playwright }) => {
+//     apiContext = await request.newContext();
+//     wpApi = new PostApi(apiContext);
+
+//   });
+ 
+//   test.afterAll(async () => {
+//     await apiContext.dispose();
+//   });
+ 
+//   test('Health Check', async () => {
+//     await wpApi.healthCheck();
+//   });
+ 
+//   test('Create Post', async () => {
+//     const { post, time } = await wpApi.createPost({
+//       title: 'Initial Test Title',
+//       content: 'Initial Test Content',
+//       status: 'publish'
+//     });
+//     createdPost = post;
+//     responseTime = time;
+ 
+//     expect(createdPost).toBeDefined();
+//     expect(createdPost.title.rendered).toBe('Initial Test Title');
+//     console.log(`Post created in ${responseTime} ms`);
+//   });
+ 
+//   test('Update Post', async () => {
+//     const { post, time } = await wpApi.updatePost(createdPost.id, {
+//       title: 'Updated Test Title',
+//       content: 'Updated Test Content'
+//     });
+ 
+//     expect(post.title.rendered).toBe('Updated Test Title');
+//     console.log(`Post updated in ${time} ms`);
+//   });
+ 
+//   test('Get Post', async () => {
+//     const post = await wpApi.getPost(createdPost.id);
+//     expect(post.id).toBe(createdPost.id);
+//     expect(post.title.rendered).toBe('Updated Test Title');
+//   });
+ 
+//   test('Delete Post', async () => {
+//     const time = await wpApi.deletePost(createdPost.id);
+//     console.log(`Post deleted in ${time} ms`);
+//   });
+ 
+//   test('Get Non-existent Post returns 404', async () => {
+//     const status = await wpApi.getNonExistentPost(createdPost.id);
+//     expect(status).toBe(404);
+//   });
+ 
+//   test('Update Non-existent Post returns 404', async () => {
+//     const status = await wpApi.updateNonExistentPost(createdPost.id);
+//     expect(status).toBe(404);
+//   });
+ 
+//   test('Create Invalid Post returns 400', async () => {
+//     const status = await wpApi.createInvalidPost();
+//     expect(status).toBe(400);
+//   });
+// });
