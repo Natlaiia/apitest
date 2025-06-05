@@ -88,8 +88,3 @@ export class PostApi {
     return response.status();
   }
 }
-
-
-
-
- 

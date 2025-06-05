@@ -25,7 +25,7 @@ jobs:
       - name: Run Playwright Tests
         run: npm test
  
-      - name: Upload Playwright Report (если используется HTML-отчет)
+      - name: Upload Playwright Report
         if: always()
         uses: actions/upload-artifact@v3
         with:
