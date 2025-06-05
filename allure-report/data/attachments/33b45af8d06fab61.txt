@@ -1,0 +1,6 @@
+{
+  createTime: '990ms',
+  editTime: '732ms',
+  deleteTime: '845ms',
+  totalTime: '2567ms'
+}
